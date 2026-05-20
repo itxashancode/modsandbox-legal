@@ -7,6 +7,30 @@ export const trpc = createTRPCClient<AppRouter>({
     httpBatchStreamLink({
       url: '/api/trpc',
       transformer,
+      headers() {
+        const devvit = (globalThis as any).devvit;
+        if (!devvit) return {};
+
+        const headers: Record<string, string> = {};
+
+        if (devvit.token) {
+          headers['Authorization'] = `Bearer ${devvit.token}`;
+          headers['devvit-context'] = devvit.token;
+        }
+
+        const ctx = devvit.context;
+        if (ctx) {
+          if (ctx.subredditId) headers['devvit-subreddit'] = ctx.subredditId;
+          if (ctx.subredditName) headers['devvit-subreddit-name'] = ctx.subredditName;
+          if (ctx.userId) headers['devvit-user'] = ctx.userId;
+          if (ctx.username) headers['devvit-user-name'] = ctx.username;
+          if (ctx.postId) headers['devvit-post'] = ctx.postId;
+          if (ctx.commentId) headers['devvit-comment'] = ctx.commentId;
+        }
+
+        return headers;
+      },
     }),
   ],
 });
+

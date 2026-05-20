@@ -13,11 +13,6 @@ export const trpc = createTRPCClient<AppRouter>({
 
         const headers: Record<string, string> = {};
 
-        if (devvit.token) {
-          headers['Authorization'] = `Bearer ${devvit.token}`;
-          headers['devvit-context'] = devvit.token;
-        }
-
         const ctx = devvit.context;
         if (ctx) {
           if (ctx.subredditId) headers['devvit-subreddit'] = ctx.subredditId;

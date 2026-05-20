@@ -16,7 +16,7 @@ export const modOnlyProcedure = createModOnlyProcedure(publicProcedure);
 export const appRouter = t.router({
   init: t.router({
     get: publicProcedure.query(async () => {
-      const username = await reddit.getCurrentUsername();
+      const username = context.username;
       return { username, postId: context.postId };
     }),
   }),
@@ -41,7 +41,7 @@ export const appRouter = t.router({
       .mutation(async ({ input }: { input: { yaml: string; limit?: number } }) => {
         try {
           const c = context as any;
-          const username = await reddit.getCurrentUsername();
+          const username = context.username;
           const rateLimitKey = `ratelimit:${username}`;
           let lastRun: string | null = null;
           if (c && c.redis) {
@@ -66,7 +66,9 @@ export const appRouter = t.router({
           }
 
           // fetch the recent posts for rule validation
-          const subreddit = await reddit.getCurrentSubreddit();
+          const subredditName = context.subredditName;
+          if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
+          const subreddit = { name: subredditName };
           const limit = input.limit ?? 100;
           const listing = await reddit.getNewPosts({
             subredditName: subreddit.name,
@@ -136,7 +138,7 @@ export const appRouter = t.router({
           // Set rate-limit marker after a successful run
           try {
             const c = context as any;
-            const username = await reddit.getCurrentUsername();
+            const username = context.username;
             const rateLimitKey = `ratelimit:${username}`;
             if (c && c.redis) {
               await c.redis.set(rateLimitKey, Date.now().toString(), { expiration: 60 });
@@ -151,7 +153,9 @@ export const appRouter = t.router({
           // attempt to persist run; fall back to in-memory store when Redis unavailable
           try {
             const c = context as any;
-            const subreddit = await reddit.getCurrentSubreddit();
+            const subredditName = context.subredditName;
+            if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
+            const subreddit = { name: subredditName };
             const key = `rule_runs:${subreddit.name}`;
             if (c && c.redis) {
               await c.redis.lPush(key, JSON.stringify(run));
@@ -182,7 +186,9 @@ export const appRouter = t.router({
     history: modOnlyProcedure.query(async () => {
       try {
         const c = context as any;
-        const subreddit = await reddit.getCurrentSubreddit();
+        const subredditName = context.subredditName;
+        if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
+        const subreddit = { name: subredditName };
         const key = `rule_runs:${subreddit.name}`;
         let items: string[] = [];
         if (c && c.redis) {
@@ -217,7 +223,9 @@ export const appRouter = t.router({
       .mutation(async ({ input }: { input: { yaml: string; name: string } }) => {
         try {
           const c = context as any;
-          const subreddit = await reddit.getCurrentSubreddit();
+          const subredditName = context.subredditName;
+          if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
+          const subreddit = { name: subredditName };
           const key = `saved_rule:${subreddit.name}:${input.name}`;
           const payload = JSON.stringify({ yaml: input.yaml, savedAt: new Date().toISOString() });
           if (c && c.redis) {
@@ -236,7 +244,9 @@ export const appRouter = t.router({
       getSaved: modOnlyProcedure.query(async () => {
         try {
           const c = context as any;
-          const subreddit = await reddit.getCurrentSubreddit();
+          const subredditName = context.subredditName;
+          if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
+          const subreddit = { name: subredditName };
           const prefix = `saved_rule:${subreddit.name}:`;
           const rules: Record<string, string> = {};
           if (c && c.redis) {
@@ -289,7 +299,9 @@ export const appRouter = t.router({
     getActive: modOnlyProcedure.query(async () => {
       try {
         const c = context as any;
-        const subreddit = await reddit.getCurrentSubreddit();
+        const subredditName = context.subredditName;
+        if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
+        const subreddit = { name: subredditName };
         const key = `active_rule:${subreddit.name}`;
         let val: string | null = null;
         if (c && c.redis) {
@@ -330,7 +342,9 @@ export const appRouter = t.router({
       .mutation(async ({ input }: { input: { yaml: string; name?: string } }) => {
         try {
           const c = context as any;
-          const subreddit = await reddit.getCurrentSubreddit();
+          const subredditName = context.subredditName;
+          if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
+          const subreddit = { name: subredditName };
           const key = `active_rule:${subreddit.name}`;
           const payload = JSON.stringify({
             yaml: input.yaml,
@@ -361,7 +375,9 @@ export const appRouter = t.router({
       .mutation(async ({ input }: { input: { oldName: string; newName: string } }) => {
         try {
           const c = context as any;
-          const subreddit = await reddit.getCurrentSubreddit();
+          const subredditName = context.subredditName;
+          if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
+          const subreddit = { name: subredditName };
           if (c && c.redis) {
             const oldKey = `saved_rule:${subreddit.name}:${input.oldName}`;
             const newKey = `saved_rule:${subreddit.name}:${input.newName}`;
@@ -390,7 +406,9 @@ export const appRouter = t.router({
       .mutation(async ({ input }: { input: { name: string } }) => {
         try {
           const c = context as any;
-          const subreddit = await reddit.getCurrentSubreddit();
+          const subredditName = context.subredditName;
+          if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
+          const subreddit = { name: subredditName };
           if (c && c.redis) {
             const key = `saved_rule:${subreddit.name}:${input.name}`;
             await c.redis.del(key);
@@ -420,7 +438,9 @@ export const appRouter = t.router({
         try {
           const rule = parseAutoModRule(input.yaml);
           if (!rule.valid) return { success: false, error: rule.parseError };
-          const subreddit = await reddit.getCurrentSubreddit();
+          const subredditName = context.subredditName;
+          if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
+          const subreddit = { name: subredditName };
           const listing = await reddit.getNewPosts({ subredditName: subreddit.name, limit: 200 });
           const posts = await listing.all();
           const shaped = posts.map(p => ({ id: (p as any).id, title: (p as any).title ?? '', body: (p as any).selftext ?? (p as any).body ?? '', author: (p as any).authorName ?? (p as any).author ?? '', url: (p as any).url ?? '', permalink: (p as any).permalink ?? '' }));

@@ -1,10 +1,10 @@
 import { TRPCError } from '@trpc/server';
-import { reddit } from '@devvit/web/server';
+import { reddit, context } from '@devvit/web/server';
 
 export const createModOnlyProcedure = <TProcedure>(procedure: TProcedure) => {
   const decorated = (procedure as any).use(async (opts: any) => {
     const { next } = opts;
-    const username = await reddit.getCurrentUsername();
+    const username = context.username;
     if (!username) {
       throw new TRPCError({
         code: 'UNAUTHORIZED',
@@ -12,11 +12,17 @@ export const createModOnlyProcedure = <TProcedure>(procedure: TProcedure) => {
       });
     }
 
-    const currentUser = await reddit.getCurrentUser();
-    const subreddit = await reddit.getCurrentSubreddit();
-    const mods = await reddit.getModerators({ subredditName: subreddit.name }).all();
+    const subredditName = context.subredditName;
+    if (!subredditName) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'Subreddit context is missing',
+      });
+    }
 
-    const isMod = mods.some(mod => mod.username === currentUser?.username);
+    const mods = await reddit.getModerators({ subredditName }).all();
+
+    const isMod = mods.some(mod => mod.username === username);
     if (!isMod) {
       throw new TRPCError({
         code: 'FORBIDDEN',

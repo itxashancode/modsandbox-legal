@@ -7,6 +7,16 @@ import { parseAutoModRule } from '../shared/parser';
 import { matchPostsAgainstRule } from '../shared/matcher';
 import { createModOnlyProcedure } from './middleware';
 
+const getCleanUsername = () => {
+  const raw = context.username;
+  return raw?.split(',')[0]?.trim();
+};
+
+const getCleanSubredditName = () => {
+  const raw = context.subredditName;
+  return raw?.split(',')[0]?.trim();
+};
+
 const t = initTRPC.context<Context>().create({ transformer });
 
 export const router = t.router;
@@ -16,7 +26,7 @@ export const modOnlyProcedure = createModOnlyProcedure(publicProcedure);
 export const appRouter = t.router({
   init: t.router({
     get: publicProcedure.query(async () => {
-      const username = context.username;
+      const username = getCleanUsername();
       return { username, postId: context.postId };
     }),
   }),
@@ -41,7 +51,7 @@ export const appRouter = t.router({
       .mutation(async ({ input }: { input: { yaml: string; limit?: number } }) => {
         try {
           const c = context as any;
-          const username = context.username;
+          const username = getCleanUsername();
           const rateLimitKey = `ratelimit:${username}`;
           let lastRun: string | null = null;
           if (c && c.redis) {
@@ -66,15 +76,58 @@ export const appRouter = t.router({
           }
 
           // fetch the recent posts for rule validation
-          const subredditName = context.subredditName;
+          const subredditName = getCleanSubredditName();
           if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
           const subreddit = { name: subredditName };
           const limit = input.limit ?? 100;
-          const listing = await reddit.getNewPosts({
-            subredditName: subreddit.name,
-            limit,
-          });
-          const posts = await listing.all();
+          
+          let posts: any[] = [];
+          let isMockData = false;
+
+          try {
+            const listing = await reddit.getNewPosts({
+              subredditName: subreddit.name,
+              limit,
+            });
+            posts = await listing.all();
+          } catch (e: any) {
+            console.warn('[ModSandbox] Failed to fetch posts via Reddit API, falling back to mock dataset:', e);
+            isMockData = true;
+            posts = [
+              {
+                id: 'mock_post_1',
+                title: 'Get rich quick! Free money here, click now!',
+                selftext: 'Earn $5000 a day working from home. Absolutely legit click here to sign up!',
+                authorName: 'spambot42',
+                url: 'https://reddit.com/r/ruleforgetest',
+                permalink: '/r/ruleforgetest/comments/mock_post_1',
+              },
+              {
+                id: 'mock_post_2',
+                title: 'Check out this awesome gameplay video',
+                selftext: 'I spent 10 hours editing this highlight reel, let me know what you think!',
+                authorName: 'gaming_fanatic',
+                url: 'https://reddit.com/r/ruleforgetest',
+                permalink: '/r/ruleforgetest/comments/mock_post_2',
+              },
+              {
+                id: 'mock_post_3',
+                title: '[Ad] Buy the best sneakers now with 50% discount!',
+                selftext: 'Limited stock available, click the link to claim your offer.',
+                authorName: 'shoestore_promo',
+                url: 'https://reddit.com/r/ruleforgetest',
+                permalink: '/r/ruleforgetest/comments/mock_post_3',
+              },
+              {
+                id: 'mock_post_4',
+                title: 'Daily discussion thread - May 20',
+                selftext: 'Use this thread to talk about anything related to the sub!',
+                authorName: 'AutoModerator',
+                url: 'https://reddit.com/r/ruleforgetest',
+                permalink: '/r/ruleforgetest/comments/mock_post_4',
+              }
+            ];
+          }
 
           // shape posts for matcher
           const shaped = posts.map(p => ({
@@ -94,23 +147,30 @@ export const appRouter = t.router({
           const logActionedPostIds = new Set<string>();
           const modLogSummary = { fetched: 0, used: 0 };
 
-          try {
-            const modLogListing = await reddit.getModerationLog({
-              subredditName: subreddit.name,
-              limit: 200,
-              pageSize: 100,
-            });
-            const modActions = await modLogListing.all();
-            modLogSummary.fetched = modActions.length;
-            for (const action of modActions) {
-              const targetId = action.target?.id;
-              if (!targetId) continue;
-              if (!testedPostIds.has(targetId)) continue;
-              logActionedPostIds.add(targetId);
+          if (isMockData) {
+            logActionedPostIds.add('mock_post_1');
+            logActionedPostIds.add('mock_post_3');
+            modLogSummary.fetched = 2;
+            modLogSummary.used = 2;
+          } else {
+            try {
+              const modLogListing = await reddit.getModerationLog({
+                subredditName: subreddit.name,
+                limit: 200,
+                pageSize: 100,
+              });
+              const modActions = await modLogListing.all();
+              modLogSummary.fetched = modActions.length;
+              for (const action of modActions) {
+                const targetId = action.target?.id;
+                if (!targetId) continue;
+                if (!testedPostIds.has(targetId)) continue;
+                logActionedPostIds.add(targetId);
+              }
+              modLogSummary.used = logActionedPostIds.size;
+            } catch (e) {
+              console.warn('Could not fetch moderation log for scoring', e);
             }
-            modLogSummary.used = logActionedPostIds.size;
-          } catch (e) {
-            console.warn('Could not fetch moderation log for scoring', e);
           }
 
           const truePositives = matchedPosts.filter(m => logActionedPostIds.has(m.postId));
@@ -132,13 +192,15 @@ export const appRouter = t.router({
               recall,
               modLogSummary,
               runAt: new Date().toISOString(),
+              isMockData,
+              moderator: username || 'anonymous',
             },
           };
 
           // Set rate-limit marker after a successful run
           try {
             const c = context as any;
-            const username = context.username;
+            const username = getCleanUsername();
             const rateLimitKey = `ratelimit:${username}`;
             if (c && c.redis) {
               await c.redis.set(rateLimitKey, Date.now().toString(), { expiration: 60 });
@@ -153,7 +215,7 @@ export const appRouter = t.router({
           // attempt to persist run; fall back to in-memory store when Redis unavailable
           try {
             const c = context as any;
-            const subredditName = context.subredditName;
+            const subredditName = getCleanSubredditName();
             if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
             const subreddit = { name: subredditName };
             const key = `rule_runs:${subreddit.name}`;
@@ -186,7 +248,7 @@ export const appRouter = t.router({
     history: modOnlyProcedure.query(async () => {
       try {
         const c = context as any;
-        const subredditName = context.subredditName;
+        const subredditName = getCleanSubredditName();
         if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
         const subreddit = { name: subredditName };
         const key = `rule_runs:${subreddit.name}`;
@@ -223,11 +285,16 @@ export const appRouter = t.router({
       .mutation(async ({ input }: { input: { yaml: string; name: string } }) => {
         try {
           const c = context as any;
-          const subredditName = context.subredditName;
+          const username = getCleanUsername();
+          const subredditName = getCleanSubredditName();
           if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
           const subreddit = { name: subredditName };
           const key = `saved_rule:${subreddit.name}:${input.name}`;
-          const payload = JSON.stringify({ yaml: input.yaml, savedAt: new Date().toISOString() });
+          const payload = JSON.stringify({
+            yaml: input.yaml,
+            savedAt: new Date().toISOString(),
+            savedBy: username || 'anonymous',
+          });
           if (c && c.redis) {
             await c.redis.set(key, payload);
           } else {
@@ -244,11 +311,11 @@ export const appRouter = t.router({
       getSaved: modOnlyProcedure.query(async () => {
         try {
           const c = context as any;
-          const subredditName = context.subredditName;
+          const subredditName = getCleanSubredditName();
           if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
           const subreddit = { name: subredditName };
           const prefix = `saved_rule:${subreddit.name}:`;
-          const rules: Record<string, string> = {};
+          const rules: Record<string, { yaml: string; savedBy: string; savedAt: string }> = {};
           if (c && c.redis) {
             const keys = await c.redis.keys(`${prefix}*`);
             for (const key of keys) {
@@ -258,15 +325,19 @@ export const appRouter = t.router({
               try {
                 const parsed = JSON.parse(val);
                 if (parsed && typeof parsed === 'object' && typeof parsed.yaml === 'string') {
-                  rules[ruleName] = parsed.yaml;
+                  rules[ruleName] = {
+                    yaml: parsed.yaml,
+                    savedBy: parsed.savedBy ?? 'anonymous',
+                    savedAt: parsed.savedAt ?? new Date().toISOString(),
+                  };
                   continue;
                 }
                 throw new Error('Invalid saved rule payload');
               } catch {
                 const rawYaml = String(val);
-                const migrated = JSON.stringify({ yaml: rawYaml, savedAt: new Date().toISOString() });
+                const migrated = JSON.stringify({ yaml: rawYaml, savedAt: new Date().toISOString(), savedBy: 'anonymous' });
                 await c.redis.set(key, migrated);
-                rules[ruleName] = rawYaml;
+                rules[ruleName] = { yaml: rawYaml, savedBy: 'anonymous', savedAt: new Date().toISOString() };
               }
             }
           } else {
@@ -277,15 +348,19 @@ export const appRouter = t.router({
               try {
                 const parsed = JSON.parse(val);
                 if (parsed && typeof parsed === 'object' && typeof parsed.yaml === 'string') {
-                  rules[ruleName] = parsed.yaml;
+                  rules[ruleName] = {
+                    yaml: parsed.yaml,
+                    savedBy: parsed.savedBy ?? 'anonymous',
+                    savedAt: parsed.savedAt ?? new Date().toISOString(),
+                  };
                   continue;
                 }
                 throw new Error('Invalid saved rule payload');
               } catch {
                 const rawYaml = String(val);
-                const migrated = JSON.stringify({ yaml: rawYaml, savedAt: new Date().toISOString() });
+                const migrated = JSON.stringify({ yaml: rawYaml, savedAt: new Date().toISOString(), savedBy: 'anonymous' });
                 store[prefixedName] = migrated;
-                rules[ruleName] = rawYaml;
+                rules[ruleName] = { yaml: rawYaml, savedBy: 'anonymous', savedAt: new Date().toISOString() };
               }
             }
           }
@@ -299,7 +374,7 @@ export const appRouter = t.router({
     getActive: modOnlyProcedure.query(async () => {
       try {
         const c = context as any;
-        const subredditName = context.subredditName;
+        const subredditName = getCleanSubredditName();
         if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
         const subreddit = { name: subredditName };
         const key = `active_rule:${subreddit.name}`;
@@ -342,7 +417,7 @@ export const appRouter = t.router({
       .mutation(async ({ input }: { input: { yaml: string; name?: string } }) => {
         try {
           const c = context as any;
-          const subredditName = context.subredditName;
+          const subredditName = getCleanSubredditName();
           if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
           const subreddit = { name: subredditName };
           const key = `active_rule:${subreddit.name}`;
@@ -375,7 +450,7 @@ export const appRouter = t.router({
       .mutation(async ({ input }: { input: { oldName: string; newName: string } }) => {
         try {
           const c = context as any;
-          const subredditName = context.subredditName;
+          const subredditName = getCleanSubredditName();
           if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
           const subreddit = { name: subredditName };
           if (c && c.redis) {
@@ -406,7 +481,7 @@ export const appRouter = t.router({
       .mutation(async ({ input }: { input: { name: string } }) => {
         try {
           const c = context as any;
-          const subredditName = context.subredditName;
+          const subredditName = getCleanSubredditName();
           if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
           const subreddit = { name: subredditName };
           if (c && c.redis) {
@@ -438,7 +513,7 @@ export const appRouter = t.router({
         try {
           const rule = parseAutoModRule(input.yaml);
           if (!rule.valid) return { success: false, error: rule.parseError };
-          const subredditName = context.subredditName;
+          const subredditName = getCleanSubredditName();
           if (!subredditName) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Subreddit context is missing' });
           const subreddit = { name: subredditName };
           const listing = await reddit.getNewPosts({ subredditName: subreddit.name, limit: 200 });

@@ -29,7 +29,7 @@ export const Splash = () => {
   const tip = getTip();
 
   return (
-    <div className="relative flex min-h-screen flex-col items-center justify-center gap-6 bg-[#0f1117] text-white px-6">
+    <div className="relative flex min-h-full h-full flex-col items-center justify-center gap-6 bg-[#0f1117] text-white px-6">
       
       {/* Logo mark */}
       <div className="flex flex-col items-center gap-2">

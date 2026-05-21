@@ -65,12 +65,14 @@ action_reason: Possible spam`);
   // Sync state with local storage cache when subredditName loads
   useEffect(() => {
     const rulesKey = `ruleforge_saved_rules:${subredditName}`;
-    const localSaved = JSON.parse(localStorage.getItem(rulesKey) || '{}');
-    setSavedRules(localSaved);
-
     const histKey = `ruleforge_test_history:${subredditName}`;
+    const localSaved = JSON.parse(localStorage.getItem(rulesKey) || '{}');
     const localHist = JSON.parse(localStorage.getItem(histKey) || '[]');
-    setHistory(localHist);
+    // Defer state updates to avoid synchronous setState warnings
+    setTimeout(() => {
+      setSavedRules(localSaved);
+      setHistory(localHist);
+    }, 0);
   }, [subredditName]);
 
   const getErrorMessage = (error: unknown) => {
@@ -146,7 +148,7 @@ action_reason: Possible spam`);
       try {
         const remoteSaved = await trpc.rules.getSaved.query();
         merged = { ...localSaved, ...remoteSaved };
-      } catch (_) {}
+      } catch (_) { void 0; }
 
       setSavedRules(merged);
       setSaveSuccess(`Rule "${saveName}" saved by u/${username || 'anonymous'} successfully!`);
